@@ -249,6 +249,7 @@ public static class CatalogApi
         [ "image/png", "image/gif", "image/jpeg", "image/bmp", "image/tiff",
           "image/wmf", "image/jp2", "image/svg+xml", "image/webp" ])]
     public static async Task<Results<FileStreamHttpResult, NotFound>> GetItemPictureById(
+        IHostEnvironment environment,
         CatalogContext context,
         [FromKeyedServices("pics")] IFileProvider pictureFileProvider,
         [Description("The catalog item id")] int id)
@@ -256,6 +257,14 @@ public static class CatalogApi
         var item = await context.CatalogItems.FindAsync(id);
 
         if (item?.PictureFileName is not { } pictureFileName)
+        {
+            return TypedResults.NotFound();
+        }
+
+        // Resolve the picture inside the Pics folder and refuse anything that escapes it.
+        var picsRootPath = Path.GetFullPath(Path.Combine(environment.ContentRootPath, "Pics"));
+        var picturePath = Path.GetFullPath(Path.Combine(picsRootPath, pictureFileName));
+        if (!picturePath.StartsWith(picsRootPath + Path.DirectorySeparatorChar, StringComparison.Ordinal))
         {
             return TypedResults.NotFound();
         }
@@ -376,6 +385,14 @@ public static class CatalogApi
         [AsParameters] CatalogServices services,
         CatalogItem productToUpdate)
     {
+        if (PictureFileNameHasDirectoryPart(productToUpdate.PictureFileName))
+        {
+            return TypedResults.BadRequest<ProblemDetails>(new ()
+            {
+                Detail = "PictureFileName must be a plain file name."
+            });
+        }
+
         var catalogItem = await services.Context.CatalogItems.SingleOrDefaultAsync(i => i.Id == id);
 
         if (catalogItem == null)
@@ -412,10 +429,18 @@ public static class CatalogApi
     }
 
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest, "application/problem+json")]
-    public static async Task<Created> CreateItem(
+    public static async Task<Results<Created, BadRequest<ProblemDetails>>> CreateItem(
         [AsParameters] CatalogServices services,
         CatalogItem product)
     {
+        if (PictureFileNameHasDirectoryPart(product.PictureFileName))
+        {
+            return TypedResults.BadRequest<ProblemDetails>(new ()
+            {
+                Detail = "PictureFileName must be a plain file name."
+            });
+        }
+
         var item = new CatalogItem(product.Name)
         {
             Id = product.Id,
@@ -451,6 +476,13 @@ public static class CatalogApi
         await services.Context.SaveChangesAsync();
         return TypedResults.NoContent();
     }
+
+    private static bool PictureFileNameHasDirectoryPart(string? pictureFileName) =>
+        pictureFileName is not null &&
+        (pictureFileName == "." ||
+         pictureFileName == ".." ||
+         pictureFileName.Contains('/') ||
+         pictureFileName.Contains('\\'));
 
     private static string GetImageMimeTypeFromImageFileExtension(string extension) => extension switch
     {
