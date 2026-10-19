@@ -4,6 +4,7 @@ using System.Net;
 using System.Text.Json;
 using Asp.Versioning;
 using Asp.Versioning.Http;
+using eShop.Catalog.API.Infrastructure;
 using eShop.Catalog.API.Model;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
@@ -242,17 +243,7 @@ public sealed class CatalogApiTests : IClassFixture<CatalogApiFixture>
         var configurationPath = Path.Combine(environment.ContentRootPath, "appsettings.json");
         Assert.True(File.Exists(configurationPath), $"Missing test target: {configurationPath}");
 
-        var item = new CatalogItem("Path traversal test")
-        {
-            Id = id,
-            PictureFileName = "../appsettings.json",
-            CatalogTypeId = 1,
-            CatalogBrandId = 1
-        };
-
-        var createResponse = await httpClient.PostAsJsonAsync(
-            "/api/catalog/items", item, cancellationToken);
-        createResponse.EnsureSuccessStatusCode();
+        await SeedItemWithPictureFileNameAsync(id, "../appsettings.json");
 
         try
         {
@@ -263,8 +254,81 @@ public sealed class CatalogApiTests : IClassFixture<CatalogApiFixture>
         }
         finally
         {
-            await httpClient.DeleteAsync($"/api/catalog/items/{id}", cancellationToken);
+            await DeleteSeededItemAsync(id);
         }
+    }
+
+    [Theory]
+    [InlineData(1.0, 99903)]
+    [InlineData(2.0, 99904)]
+    public async Task GetCatalogItemPicDoesNotServeAbsolutePaths(double version, int id)
+    {
+        using var httpClient = CreateHttpClient(new ApiVersion(version));
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var environment = _webApplicationFactory.Services.GetRequiredService<IWebHostEnvironment>();
+        var configurationPath = Path.Combine(environment.ContentRootPath, "appsettings.json");
+        Assert.True(File.Exists(configurationPath), $"Missing test target: {configurationPath}");
+
+        await SeedItemWithPictureFileNameAsync(id, configurationPath);
+
+        try
+        {
+            var response = await httpClient.GetAsync(
+                $"/api/catalog/items/{id}/pic", cancellationToken);
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+        finally
+        {
+            await DeleteSeededItemAsync(id);
+        }
+    }
+
+    [Theory]
+    [InlineData(1.0, 99905)]
+    [InlineData(2.0, 99906)]
+    public async Task CreateCatalogItemRejectsPictureFileNameWithDirectoryPart(double version, int id)
+    {
+        using var httpClient = CreateHttpClient(new ApiVersion(version));
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var item = new CatalogItem("Path traversal create test")
+        {
+            Id = id,
+            PictureFileName = "../appsettings.json",
+            CatalogTypeId = 1,
+            CatalogBrandId = 1
+        };
+
+        var response = await httpClient.PostAsJsonAsync("/api/catalog/items", item, cancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(1.0, 99907)]
+    [InlineData(2.0, 99908)]
+    public async Task UpdateCatalogItemRejectsPictureFileNameWithDirectoryPart(double version, int id)
+    {
+        using var httpClient = CreateHttpClient(new ApiVersion(version));
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var item = new CatalogItem("Path traversal update test")
+        {
+            Id = id,
+            PictureFileName = "../appsettings.json",
+            CatalogTypeId = 1,
+            CatalogBrandId = 1
+        };
+
+        var response = version switch
+        {
+            1.0 => await httpClient.PutAsJsonAsync("/api/catalog/items", item, cancellationToken),
+            2.0 => await httpClient.PutAsJsonAsync($"/api/catalog/items/{id}", item, cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(nameof(version), version, null)
+        };
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Theory]
@@ -503,5 +567,31 @@ public sealed class CatalogApiTests : IClassFixture<CatalogApiFixture>
             TestContext.Current.CancellationToken);
         Assert.Empty(result!.Data);
         Assert.Equal(1000, result.PageIndex);
+    }
+
+    private async Task SeedItemWithPictureFileNameAsync(int id, string pictureFileName)
+    {
+        using var scope = _webApplicationFactory.Services.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<CatalogContext>();
+        context.CatalogItems.Add(new CatalogItem($"Path traversal test {id}")
+        {
+            Id = id,
+            PictureFileName = pictureFileName,
+            CatalogTypeId = 1,
+            CatalogBrandId = 1
+        });
+        await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+    }
+
+    private async Task DeleteSeededItemAsync(int id)
+    {
+        using var scope = _webApplicationFactory.Services.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<CatalogContext>();
+        var item = await context.CatalogItems.FindAsync(new object[] { id }, TestContext.Current.CancellationToken);
+        if (item is not null)
+        {
+            context.CatalogItems.Remove(item);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
     }
 }
